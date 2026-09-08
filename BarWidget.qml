@@ -212,7 +212,7 @@ BarWidget {
       // --- upcoming fixtures (shown when nothing is live) ---
       Column {
         width: parent.width
-        spacing: Style.space(4)
+        spacing: Style.space(8)
         visible: root.liveMatch === null
 
         Text {
@@ -227,15 +227,30 @@ BarWidget {
         Repeater {
           model: root.upcoming.slice(0, 5)
 
-          Text {
+          Column {
             required property var modelData
-            textFormat: Text.PlainText
-            text: modelData.team + " vs " + modelData.opponent + " — " + Model.kickoffClock(modelData.kickoff) + " (" + modelData.competition + ")"
-            color: root.bar.foreground
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.bodySmall
             width: parent.width
-            elide: Text.ElideRight
+            spacing: 0
+
+            Text {
+              textFormat: Text.PlainText
+              text: modelData.team + " vs " + modelData.opponent
+              color: root.bar.foreground
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              font.bold: true
+              width: parent.width
+              elide: Text.ElideRight
+            }
+            Text {
+              textFormat: Text.PlainText
+              text: Model.kickoffClock(modelData.kickoff) + " · " + modelData.competition
+              color: Qt.darker(root.bar.foreground, 1.4)
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.caption
+              width: parent.width
+              wrapMode: Text.WordWrap
+            }
           }
         }
 
