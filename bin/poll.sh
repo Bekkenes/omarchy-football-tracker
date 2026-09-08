@@ -81,24 +81,41 @@ if [[ -f "$FIXTURES_CACHE" ]]; then
 fi
 
 if [[ "$cache_stale" -eq 1 ]]; then
-  ft_log "refreshing fixture cache for $team_count team(s)"
+  # The free API-Football plan rejects `next`/`last` and any non-2022-2024
+  # `season` value, so per-team "next N fixtures" lookups are not available.
+  # `fixtures?date=<day>` has no such restriction, so scan a day window
+  # instead and keep only fixtures involving a favorite team.
+  ft_log "refreshing fixture cache for $team_count team(s) (day-window scan)"
+  team_ids="$(jq -c '[.[].id]' <<<"$teams_json")"
   all_fixtures="[]"
-  while IFS= read -r team; do
-    team_id="$(jq -r '.id' <<<"$team")"
-    team_name="$(jq -r '.name' <<<"$team")"
-    resp="$(ft_api "fixtures?team=${team_id}&next=5")" || { ft_log "fixture fetch failed for $team_name"; continue; }
-    fx="$(jq -c --arg tname "$team_name" --argjson tid "$team_id" '
-      [.response[]? | {
-        team: $tname, team_id: $tid,
-        fixture_id: .fixture.id,
-        kickoff: .fixture.date,
-        home: .teams.home.id == $tid,
-        opponent: (if .teams.home.id == $tid then .teams.away.name else .teams.home.name end),
-        competition: .league.name
-      }]' <<<"$resp" 2>/dev/null)"
-    [[ -n "$fx" ]] && all_fixtures="$(jq -c --argjson a "$all_fixtures" --argjson b "$fx" '$a + $b' <<<null)"
-  done < <(jq -c '.[]' <<<"$teams_json")
-  jq -n --arg d "$TODAY" --argjson f "$all_fixtures" '{fetched_date:$d, fixtures:$f}' > "$FIXTURES_CACHE"
+  fail_count=0
+  day_count=0
+  for offset in $(seq 0 13); do
+    [[ "$offset" -gt 0 ]] && sleep 3
+    day_count=$((day_count + 1))
+    d="$(date -u -d "+${offset} day" +%Y-%m-%d)"
+    resp="$(ft_api "fixtures?date=${d}")" || { ft_log "fixture fetch failed for $d"; fail_count=$((fail_count + 1)); continue; }
+    fx="$(jq -c --argjson ids "$team_ids" --argjson teams "$teams_json" '
+      [.response[]? as $f
+       | ($f.teams.home.id) as $hid | ($f.teams.away.id) as $aid
+       | select(($ids | index($hid)) != null or ($ids | index($aid)) != null)
+       | (if ($ids | index($hid)) != null then $hid else $aid end) as $myid
+       | {
+           team: ($teams[] | select(.id == $myid) | .name),
+           team_id: $myid,
+           fixture_id: $f.fixture.id,
+           kickoff: $f.fixture.date,
+           home: ($hid == $myid),
+           opponent: (if $hid == $myid then $f.teams.away.name else $f.teams.home.name end),
+           competition: $f.league.name
+         }]' <<<"$resp" 2>/dev/null)"
+    [[ -n "$fx" && "$fx" != "[]" ]] && all_fixtures="$(jq -c --argjson a "$all_fixtures" --argjson b "$fx" '$a + $b' <<<null)"
+  done
+  if [[ "$fail_count" -ge "$day_count" ]]; then
+    ft_log "fixture cache refresh failed entirely ($fail_count/$day_count days) — leaving cache stale, will retry next poll"
+  else
+    jq -n --arg d "$TODAY" --argjson f "$all_fixtures" '{fetched_date:$d, fixtures:$f}' > "$FIXTURES_CACHE"
+  fi
 fi
 
 fixtures="$(jq -c '.fixtures // []' "$FIXTURES_CACHE" 2>/dev/null || echo '[]')"

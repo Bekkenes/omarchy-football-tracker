@@ -87,14 +87,23 @@ while true; do
   read -rp "Team name to search: " term
   [[ -z "$term" ]] && continue
 
-  query="teams?search=$(jq -rn --arg s "$term" '$s|@uri')"
-  [[ -n "$country" ]] && query="${query}&country=$(jq -rn --arg s "$country" '$s|@uri')"
-  resp="$(ft_api "$query")"
+  # API-Football rejects combining `search` with `country` in one request
+  # ("The Country field cannot be used with the Search field"), so search by
+  # name only and filter to the chosen country client-side — falling back to
+  # the unfiltered results if that filter would hide a real match (e.g. the
+  # team's recorded country spelling differs from ours).
+  resp="$(ft_api "teams?search=$(jq -rn --arg s "$term" '$s|@uri')")"
   count="$(jq '.response | length' <<<"$resp" 2>/dev/null || echo 0)"
 
   if [[ "$count" -eq 0 ]]; then
     echo "No teams found for '$term'. Try again."
     continue
+  fi
+
+  if [[ -n "$country" ]]; then
+    filtered="$(jq --arg c "$country" '{response: [.response[] | select(.team.country == $c)]}' <<<"$resp")"
+    filtered_count="$(jq '.response | length' <<<"$filtered")"
+    [[ "$filtered_count" -gt 0 ]] && resp="$filtered"
   fi
 
   echo "Results:"

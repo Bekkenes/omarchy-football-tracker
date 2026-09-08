@@ -320,7 +320,7 @@ BarWidget {
             onClicked: {
               if (root.bar) {
                 var cmd = "bash " + root.pluginDir + "bin/save-settings.sh --api-key "
-                  + root.bar.shellQuote(apiKeyField.text) + " --teams " + root.bar.shellQuote(teamsField.text)
+                  + Model.shQuote(apiKeyField.text) + " --teams " + Model.shQuote(teamsField.text)
                 root.bar.run(cmd)
               }
               apiKeyField.text = ""

@@ -37,9 +37,23 @@ ft_api() {
     ft_log "no API key configured (run setup.sh)"
     return 1
   fi
-  curl -fsS --max-time 15 \
-    -H "x-apisports-key: $key" \
-    "$API_BASE/$path"
+  local attempt body code
+  for attempt in 1 2 3; do
+    body="$(curl -sS --max-time 15 -w '\n%{http_code}' \
+      -H "x-apisports-key: $key" \
+      "$API_BASE/$path")"
+    code="${body##*$'\n'}"
+    body="${body%$'\n'*}"
+    if [[ "$code" == "429" ]]; then
+      ft_log "rate limited (attempt $attempt), backing off"
+      sleep $((attempt * 8))
+      continue
+    fi
+    printf '%s' "$body"
+    return 0
+  done
+  ft_log "gave up after repeated rate limiting: $path"
+  return 1
 }
 
 # ft_notify <headline> <body> <icon-file> [urgency] [glyph]
