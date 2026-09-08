@@ -81,20 +81,28 @@ if [[ -f "$FIXTURES_CACHE" ]]; then
 fi
 
 if [[ "$cache_stale" -eq 1 ]]; then
-  # The free API-Football plan rejects `next`/`last` and any non-2022-2024
-  # `season` value, so per-team "next N fixtures" lookups are not available.
-  # `fixtures?date=<day>` has no such restriction, so scan a day window
-  # instead and keep only fixtures involving a favorite team.
-  ft_log "refreshing fixture cache for $team_count team(s) (day-window scan)"
+  # The free API-Football plan rejects `next`/`last`, any non-2022-2024
+  # `season` value, AND restricts the `date` parameter itself to a rolling
+  # yesterday/today/tomorrow window (confirmed directly against the live
+  # API: `date=<today+2>` is rejected with "Free plans do not have access
+  # to this date, try from <yesterday> to <tomorrow>"). So on the free plan
+  # there is no way to see a fixture more than ~1 day ahead, for any team,
+  # through any endpoint. This only scans today+tomorrow accordingly — a
+  # favorite team's match becomes visible the day before it happens, not
+  # further out. (A paid plan lifts the date/season restriction if more
+  # advance notice is wanted.)
+  ft_log "refreshing fixture cache for $team_count team(s) (today+tomorrow)"
   team_ids="$(jq -c '[.[].id]' <<<"$teams_json")"
   all_fixtures="[]"
   fail_count=0
   day_count=0
-  for offset in $(seq 0 13); do
-    [[ "$offset" -gt 0 ]] && sleep 3
+  for offset in 0 1; do
+    [[ "$offset" -gt 0 ]] && sleep 2
     day_count=$((day_count + 1))
     d="$(date -u -d "+${offset} day" +%Y-%m-%d)"
     resp="$(ft_api "fixtures?date=${d}")" || { ft_log "fixture fetch failed for $d"; fail_count=$((fail_count + 1)); continue; }
+    api_err="$(jq -c '.errors // {}' <<<"$resp" 2>/dev/null)"
+    [[ -n "$api_err" && "$api_err" != "{}" && "$api_err" != "[]" ]] && ft_log "API error for $d: $api_err"
     fx="$(jq -c --argjson ids "$team_ids" --argjson teams "$teams_json" '
       [.response[]? as $f
        | ($f.teams.home.id) as $hid | ($f.teams.away.id) as $aid
@@ -121,8 +129,14 @@ fi
 fixtures="$(jq -c '.fixtures // []' "$FIXTURES_CACHE" 2>/dev/null || echo '[]')"
 
 bookkeeping="$(load_bookkeeping)"
-recent_events="$([[ -f "$STATE_FILE" ]] && jq -c '.recent_events // []' "$STATE_FILE" 2>/dev/null || echo '[]')"
-[[ -z "$recent_events" ]] && recent_events='[]'
+# recent_events only carries forward across polls while the SAME match is
+# still live (so events accumulate through a match); otherwise it starts
+# fresh, so cards from a finished/previous match don't linger in the popup
+# forever once nothing is live.
+prev_live_fixture_id="$([[ -f "$STATE_FILE" ]] && jq -r '.live_match.fixture_id // empty' "$STATE_FILE" 2>/dev/null)"
+prev_recent_events="$([[ -f "$STATE_FILE" ]] && jq -c '.recent_events // []' "$STATE_FILE" 2>/dev/null || echo '[]')"
+[[ -z "$prev_recent_events" ]] && prev_recent_events='[]'
+recent_events='[]'
 
 live_match="null"
 next_match="$(jq -c 'sort_by(.kickoff) | .[0] // null' <<<"$fixtures")"
@@ -176,6 +190,12 @@ while IFS= read -r fx; do
         --argjson fid "$fid" --argjson hs "$home_score" --argjson as "$away_score" \
         --argjson el "$elapsed" --arg st "$status_short" \
         '{fixture_id:$fid, team:$team, opponent:$opp, home_score:$hs, away_score:$as, elapsed:$el, status:$st, competition:$comp}')"
+
+      # Same match still live as last poll: keep showing its earlier events.
+      # Different (or no previous) live match: start the feed fresh.
+      if [[ "$prev_live_fixture_id" == "$fid" ]]; then
+        recent_events="$prev_recent_events"
+      fi
 
       events_resp="$(ft_api "fixtures/events?fixture=${fid}")" || events_resp=""
       seen_key="events_${fid}"
