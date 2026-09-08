@@ -285,8 +285,6 @@ BarWidget {
           linkColor: Color.accent
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.caption
-          hoverEnabled: true
-          cursorShape: hoveredLink !== "" ? Qt.PointingHandCursor : Qt.ArrowCursor
           onLinkActivated: function(link) { Qt.openUrlExternally(link) }
         }
 
