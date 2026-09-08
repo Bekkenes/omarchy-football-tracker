@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+# Backend poller for the football-tracker plugin.
+# Invoked periodically by the omarchy-football-tracker systemd --user timer.
+# Writes ~/.local/state/omarchy-football-tracker/state.json for the QML bar
+# widget to read, and fires desktop notifications for match-day / kickoff /
+# live-event moments.
+#
+# Usage: poll.sh [--simulate]
+
+set -uo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib.sh
+source "$SCRIPT_DIR/lib.sh"
+
+SIMULATE=0
+[[ "${1:-}" == "--simulate" ]] && SIMULATE=1
+
+NOW_EPOCH="$(date -u +%s)"
+TODAY="$(date -u +%Y-%m-%d)"
+
+# --- bookkeeping (dedup) lives inside the same state file, under "_bookkeeping" ---
+load_bookkeeping() {
+  if [[ -f "$STATE_FILE" ]]; then
+    jq -c '._bookkeeping // {}' "$STATE_FILE" 2>/dev/null || echo '{}'
+  else
+    echo '{}'
+  fi
+}
+
+if [[ "$SIMULATE" -eq 1 ]]; then
+  ft_log "SIMULATE mode: seeding a fake live match + events, no API calls made"
+  ft_notify "Liverpool play today" "Liverpool vs Arsenal — 19:00 kickoff (Premier League)" "calendar.svg" "normal"
+  sleep 1
+  ft_notify "Kickoff in 15 minutes" "Liverpool vs Arsenal kicks off soon (Premier League)" "whistle.svg" "normal"
+  sleep 1
+  ft_notify "Kickoff! Liverpool vs Arsenal" "0 - 0 (Premier League)" "whistle.svg" "normal"
+  sleep 1
+  ft_notify "GOAL! Liverpool 1-0 Arsenal" "23' Salah (Normal Goal)" "goal.svg" "critical"
+  sleep 1
+  ft_notify "Yellow card — Arsenal" "30' Saka" "card-yellow.svg" "normal"
+
+  state=$(jq -n '{
+    updated_at: (now | todateiso8601),
+    next_match: null,
+    live_match: {
+      fixture_id: 999999, team: "Liverpool", opponent: "Arsenal",
+      home_score: 1, away_score: 0, elapsed: 34, status: "1H", competition: "Premier League"
+    },
+    recent_events: [
+      {type:"Goal", minute:23, team:"Liverpool", player:"Salah", detail:"Normal Goal", icon:"goal.svg"},
+      {type:"Card", minute:30, team:"Arsenal", player:"Saka", detail:"Yellow Card", icon:"card-yellow.svg"}
+    ],
+    upcoming: [],
+    _bookkeeping: {}
+  }')
+  ft_write_state "$state"
+  ft_log "simulate: wrote sample state.json — check the bar widget now"
+  exit 0
+fi
+
+config="$(ft_read_config)"
+teams_json="$(jq -c '.teams // []' <<<"$config")"
+team_count="$(jq 'length' <<<"$teams_json")"
+live_interval="$(jq -r '.poll_interval_live_seconds // 180' <<<"$config")"
+
+if [[ "$team_count" -eq 0 ]]; then
+  ft_log "no favorite teams configured — run setup.sh"
+  exit 0
+fi
+
+if [[ -z "$(ft_api_key)" ]]; then
+  ft_log "no API key configured — run setup.sh"
+  exit 0
+fi
+
+# --- refresh fixture cache once/day ---
+cache_stale=1
+if [[ -f "$FIXTURES_CACHE" ]]; then
+  cache_date="$(jq -r '.fetched_date // ""' "$FIXTURES_CACHE" 2>/dev/null)"
+  [[ "$cache_date" == "$TODAY" ]] && cache_stale=0
+fi
+
+if [[ "$cache_stale" -eq 1 ]]; then
+  ft_log "refreshing fixture cache for $team_count team(s)"
+  all_fixtures="[]"
+  while IFS= read -r team; do
+    team_id="$(jq -r '.id' <<<"$team")"
+    team_name="$(jq -r '.name' <<<"$team")"
+    resp="$(ft_api "fixtures?team=${team_id}&next=5")" || { ft_log "fixture fetch failed for $team_name"; continue; }
+    fx="$(jq -c --arg tname "$team_name" --argjson tid "$team_id" '
+      [.response[]? | {
+        team: $tname, team_id: $tid,
+        fixture_id: .fixture.id,
+        kickoff: .fixture.date,
+        home: .teams.home.id == $tid,
+        opponent: (if .teams.home.id == $tid then .teams.away.name else .teams.home.name end),
+        competition: .league.name
+      }]' <<<"$resp" 2>/dev/null)"
+    [[ -n "$fx" ]] && all_fixtures="$(jq -c --argjson a "$all_fixtures" --argjson b "$fx" '$a + $b' <<<null)"
+  done < <(jq -c '.[]' <<<"$teams_json")
+  jq -n --arg d "$TODAY" --argjson f "$all_fixtures" '{fetched_date:$d, fixtures:$f}' > "$FIXTURES_CACHE"
+fi
+
+fixtures="$(jq -c '.fixtures // []' "$FIXTURES_CACHE" 2>/dev/null || echo '[]')"
+
+bookkeeping="$(load_bookkeeping)"
+recent_events="$([[ -f "$STATE_FILE" ]] && jq -c '.recent_events // []' "$STATE_FILE" 2>/dev/null || echo '[]')"
+[[ -z "$recent_events" ]] && recent_events='[]'
+
+live_match="null"
+next_match="$(jq -c 'sort_by(.kickoff) | .[0] // null' <<<"$fixtures")"
+
+# fixtures happening today (local date match, UTC-based approximation)
+todays="$(jq -c --arg today "$TODAY" '[.[] | select(.kickoff[0:10] == $today)]' <<<"$fixtures")"
+
+while IFS= read -r fx; do
+  [[ -z "$fx" || "$fx" == "null" ]] && continue
+  fid="$(jq -r '.fixture_id' <<<"$fx")"
+  kickoff="$(jq -r '.kickoff' <<<"$fx")"
+  kickoff_epoch="$(date -u -d "$kickoff" +%s 2>/dev/null || echo 0)"
+  [[ "$kickoff_epoch" -eq 0 ]] && continue
+  mins_to_kickoff=$(( (kickoff_epoch - NOW_EPOCH) / 60 ))
+  key="$fid"
+
+  notified_day="$(jq -r --arg k "$key" '.[$k].day // false' <<<"$bookkeeping")"
+  notified_15="$(jq -r --arg k "$key" '.[$k].t15 // false' <<<"$bookkeeping")"
+  notified_ko="$(jq -r --arg k "$key" '.[$k].kickoff // false' <<<"$bookkeeping")"
+
+  team="$(jq -r '.team' <<<"$fx")"; opp="$(jq -r '.opponent' <<<"$fx")"; comp="$(jq -r '.competition' <<<"$fx")"
+  ko_local="$(date -d "$kickoff" +%H:%M 2>/dev/null || echo "$kickoff")"
+
+  if [[ "$notified_day" != "true" ]]; then
+    ft_notify "$team play today" "$team vs $opp — $ko_local kickoff ($comp)" "calendar.svg" "normal"
+    bookkeeping="$(jq -c --arg k "$key" '.[$k].day = true' <<<"$bookkeeping")"
+  fi
+
+  if [[ "$notified_15" != "true" && "$mins_to_kickoff" -le 15 && "$mins_to_kickoff" -ge 0 ]]; then
+    ft_notify "Kickoff in 15 minutes" "$team vs $opp ($comp)" "whistle.svg" "normal"
+    bookkeeping="$(jq -c --arg k "$key" '.[$k].t15 = true' <<<"$bookkeeping")"
+  fi
+
+  # live window: kickoff time through kickoff + 130 minutes
+  if [[ "$NOW_EPOCH" -ge "$kickoff_epoch" && "$NOW_EPOCH" -le $((kickoff_epoch + 130*60)) ]]; then
+    live_resp="$(ft_api "fixtures?live=all")" || live_resp=""
+    live_fx="$(jq -c --argjson fid "$fid" '.response[]? | select(.fixture.id == $fid)' <<<"$live_resp" 2>/dev/null)"
+
+    if [[ -n "$live_fx" && "$live_fx" != "null" ]]; then
+      if [[ "$notified_ko" != "true" ]]; then
+        ft_notify "Kickoff! $team vs $opp" "0 - 0 ($comp)" "whistle.svg" "normal"
+        bookkeeping="$(jq -c --arg k "$key" '.[$k].kickoff = true' <<<"$bookkeeping")"
+      fi
+
+      home_score="$(jq -r '.goals.home // 0' <<<"$live_fx")"
+      away_score="$(jq -r '.goals.away // 0' <<<"$live_fx")"
+      elapsed="$(jq -r '.fixture.status.elapsed // 0' <<<"$live_fx")"
+      status_short="$(jq -r '.fixture.status.short // ""' <<<"$live_fx")"
+
+      live_match="$(jq -n --arg team "$team" --arg opp "$opp" --arg comp "$comp" \
+        --argjson fid "$fid" --argjson hs "$home_score" --argjson as "$away_score" \
+        --argjson el "$elapsed" --arg st "$status_short" \
+        '{fixture_id:$fid, team:$team, opponent:$opp, home_score:$hs, away_score:$as, elapsed:$el, status:$st, competition:$comp}')"
+
+      events_resp="$(ft_api "fixtures/events?fixture=${fid}")" || events_resp=""
+      seen_key="events_${fid}"
+      seen="$(jq -c --arg k "$seen_key" '.[$k] // []' <<<"$bookkeeping")"
+
+      new_events="[]"
+      while IFS= read -r ev; do
+        [[ -z "$ev" || "$ev" == "null" ]] && continue
+        etype="$(jq -r '.type' <<<"$ev")"
+        edetail="$(jq -r '.detail // ""' <<<"$ev")"
+        emin="$(jq -r '.time.elapsed // 0' <<<"$ev")"
+        eplayer="$(jq -r '.player.name // "Unknown"' <<<"$ev")"
+        eteam="$(jq -r '.team.name // ""' <<<"$ev")"
+        ekey="${emin}-${etype}-${edetail}-${eplayer}"
+
+        already_seen="$(jq -r --arg k "$ekey" 'index($k) != null' <<<"$seen")"
+        if [[ "$already_seen" != "true" ]]; then
+          icon="$(ft_icon_for_event "$etype" "$edetail")"
+          case "$etype" in
+            Goal) headline="GOAL! $eteam" ; urgency="critical" ;;
+            Card) headline="${edetail} — $eteam" ; urgency="normal" ;;
+            subst) headline="Substitution — $eteam" ; urgency="low" ;;
+            *) headline="$etype — $eteam" ; urgency="low" ;;
+          esac
+          ft_notify "$headline" "${emin}' $eplayer ($edetail)" "$icon" "$urgency"
+          seen="$(jq -c --arg k "$ekey" '. + [$k]' <<<"$seen")"
+          new_ev="$(jq -n --arg type "$etype" --argjson minute "$emin" --arg team "$eteam" \
+            --arg player "$eplayer" --arg detail "$edetail" --arg icon "$icon" \
+            '{type:$type, minute:$minute, team:$team, player:$player, detail:$detail, icon:$icon}')"
+          new_events="$(jq -c --argjson a "$new_events" --argjson e "$new_ev" '$a + [$e]' <<<null)"
+        fi
+      done < <(jq -c '.[]?' <<<"$events_resp" 2>/dev/null)
+
+      bookkeeping="$(jq -c --arg k "$seen_key" --argjson s "$seen" '.[$k] = $s' <<<"$bookkeeping")"
+      recent_events="$(jq -c --argjson old "$recent_events" --argjson new "$new_events" '($new + $old) | .[0:20]' <<<null)"
+
+      if [[ "$status_short" =~ ^(FT|AET|PEN)$ ]]; then
+        ft_notify "Full time: $team $home_score-$away_score $opp" "$comp" "whistle.svg" "normal"
+      fi
+    fi
+  fi
+done < <(jq -c '.[]' <<<"$todays")
+
+state="$(jq -n \
+  --argjson next "$next_match" --argjson live "$live_match" \
+  --argjson recent "$recent_events" --argjson upcoming "$fixtures" \
+  --argjson bk "$bookkeeping" \
+  '{updated_at: (now | todateiso8601), next_match: $next, live_match: $live, recent_events: $recent, upcoming: $upcoming, _bookkeeping: $bk}')"
+ft_write_state "$state"
