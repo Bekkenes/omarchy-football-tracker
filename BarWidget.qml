@@ -87,7 +87,7 @@ BarWidget {
     hoverEnabled: true
   }
 
-  PopupCard {
+  KeyboardPanel {
     id: popup
     anchorItem: root
     bar: root.bar
