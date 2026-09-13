@@ -39,7 +39,7 @@ function minutesUntil(iso) {
 function barLabel(state) {
   if (state.live_match) {
     var lm = state.live_match
-    return lm.team + " " + lm.home_score + "-" + lm.away_score + " " + (lm.elapsed || 0) + "'"
+    return lm.team + " " + lm.team_score + "-" + lm.opponent_score + " " + (lm.elapsed || 0) + "'"
   }
   if (state.next_match) {
     var mins = minutesUntil(state.next_match.kickoff)

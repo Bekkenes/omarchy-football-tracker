@@ -20,11 +20,12 @@ TODAY="$(date -u +%Y-%m-%d)"
 
 # --- bookkeeping (dedup) lives inside the same state file, under "_bookkeeping" ---
 load_bookkeeping() {
+  local bk="{}"
   if [[ -f "$STATE_FILE" ]]; then
-    jq -c '._bookkeeping // {}' "$STATE_FILE" 2>/dev/null || echo '{}'
-  else
-    echo '{}'
+    bk="$(jq -c '._bookkeeping // {}' "$STATE_FILE" 2>/dev/null)"
   fi
+  [[ -z "$bk" ]] && bk='{}'
+  echo "$bk"
 }
 
 if [[ "$SIMULATE" -eq 1 ]]; then
@@ -44,7 +45,7 @@ if [[ "$SIMULATE" -eq 1 ]]; then
     next_match: null,
     live_match: {
       fixture_id: 999999, team: "Liverpool", opponent: "Arsenal",
-      home_score: 1, away_score: 0, elapsed: 34, status: "1H", competition: "Premier League"
+      team_score: 1, opponent_score: 0, elapsed: 34, status: "1H", competition: "Premier League"
     },
     recent_events: [
       {type:"Goal", minute:23, team:"Liverpool", player:"Salah", detail:"Normal Goal", icon:"goal.svg"},
@@ -158,6 +159,7 @@ while IFS= read -r fx; do
   notified_ko="$(jq -r --arg k "$key" '.[$k].kickoff // false' <<<"$bookkeeping")"
 
   team="$(jq -r '.team' <<<"$fx")"; opp="$(jq -r '.opponent' <<<"$fx")"; comp="$(jq -r '.competition' <<<"$fx")"
+  home="$(jq -r '.home // false' <<<"$fx")"
   ko_local="$(date -d "$kickoff" +%H:%M 2>/dev/null || echo "$kickoff")"
 
   if [[ "$notified_day" != "true" ]]; then
@@ -186,10 +188,20 @@ while IFS= read -r fx; do
       elapsed="$(jq -r '.fixture.status.elapsed // 0' <<<"$live_fx")"
       status_short="$(jq -r '.fixture.status.short // ""' <<<"$live_fx")"
 
+      # Store scores favorite-team-first so the bar/popup show the user's
+      # team before the opponent regardless of home/away.
+      if [[ "$home" == "true" ]]; then
+        team_score="$home_score"
+        opponent_score="$away_score"
+      else
+        team_score="$away_score"
+        opponent_score="$home_score"
+      fi
+
       live_match="$(jq -n --arg team "$team" --arg opp "$opp" --arg comp "$comp" \
-        --argjson fid "$fid" --argjson hs "$home_score" --argjson as "$away_score" \
+        --argjson fid "$fid" --argjson ts "$team_score" --argjson os "$opponent_score" \
         --argjson el "$elapsed" --arg st "$status_short" \
-        '{fixture_id:$fid, team:$team, opponent:$opp, home_score:$hs, away_score:$as, elapsed:$el, status:$st, competition:$comp}')"
+        '{fixture_id:$fid, team:$team, opponent:$opp, team_score:$ts, opponent_score:$os, elapsed:$el, status:$st, competition:$comp}')"
 
       # Same match still live as last poll: keep showing its earlier events.
       # Different (or no previous) live match: start the feed fresh.
@@ -227,13 +239,13 @@ while IFS= read -r fx; do
             '{type:$type, minute:$minute, team:$team, player:$player, detail:$detail, icon:$icon}')"
           new_events="$(jq -c --argjson a "$new_events" --argjson e "$new_ev" '$a + [$e]' <<<null)"
         fi
-      done < <(jq -c '.[]?' <<<"$events_resp" 2>/dev/null)
+      done < <(jq -c '.response[]?' <<<"$events_resp" 2>/dev/null)
 
       bookkeeping="$(jq -c --arg k "$seen_key" --argjson s "$seen" '.[$k] = $s' <<<"$bookkeeping")"
       recent_events="$(jq -c --argjson old "$recent_events" --argjson new "$new_events" '($new + $old) | .[0:20]' <<<null)"
 
       if [[ "$status_short" =~ ^(FT|AET|PEN)$ ]]; then
-        ft_notify "Full time: $team $home_score-$away_score $opp" "$comp" "whistle.svg" "normal"
+        ft_notify "Full time: $team $team_score-$opponent_score $opp" "$comp" "whistle.svg" "normal"
       fi
     fi
   fi

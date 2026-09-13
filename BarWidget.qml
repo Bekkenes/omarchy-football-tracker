@@ -109,7 +109,7 @@ BarWidget {
 
         Text {
           textFormat: Text.PlainText
-          text: root.liveMatch ? (root.liveMatch.team + " " + root.liveMatch.home_score + " - " + root.liveMatch.away_score + " " + root.liveMatch.opponent) : ""
+          text: root.liveMatch ? (root.liveMatch.team + " " + root.liveMatch.team_score + " - " + root.liveMatch.opponent_score + " " + root.liveMatch.opponent) : ""
           color: root.bar.foreground
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.subtitle
