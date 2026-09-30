@@ -108,6 +108,10 @@ ft_write_config() {
 
 ft_write_state() {
   # ft_write_state <json>
+  if [[ -z "${1//[[:space:]]/}" ]] || ! jq empty <<<"$1" >/dev/null 2>&1; then
+    ft_log "ft_write_state: refusing to write empty/invalid JSON, keeping previous state.json"
+    return 1
+  fi
   local tmp="$STATE_FILE.tmp.$$"
   echo "$1" > "$tmp" && mv "$tmp" "$STATE_FILE"
 }

@@ -244,7 +244,7 @@ BarWidget {
             }
             Text {
               textFormat: Text.PlainText
-              text: Model.kickoffClock(modelData.kickoff) + " · " + modelData.competition
+              text: Model.dayLabel(modelData.kickoff) + Model.kickoffClock(modelData.kickoff) + " · " + modelData.competition
               color: Qt.darker(root.bar.foreground, 1.4)
               font.family: root.bar.fontFamily
               font.pixelSize: Style.font.caption
