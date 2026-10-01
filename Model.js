@@ -1,6 +1,13 @@
 // Pure formatting helpers for the football-tracker bar widget/popup.
 // No API calls, no state — just turns state.json fields into display strings.
 
+// Wrap a value for safe use as a single POSIX shell argument. Used for the
+// live-poll settings, which go through bar.run() as a shell string. (The API
+// key never does: it goes to save-settings.sh on stdin.)
+function shQuote(value) {
+  return "'" + String(value).split("'").join("'\\''") + "'"
+}
+
 function safeParse(text) {
   try {
     var parsed = JSON.parse(text)
