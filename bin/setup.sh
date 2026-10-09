@@ -38,7 +38,7 @@ if [[ -z "${api_key:-}" ]]; then
       continue
     fi
     echo "Validating..."
-    status_resp="$(curl -fsS --max-time 15 -H "x-apisports-key: $api_key" "$API_BASE/status" 2>/dev/null)"
+    status_resp="$(ft_curl_config "$api_key" | curl -fsS --max-time 15 -K - "$API_BASE/status" 2>/dev/null)"
     if [[ -z "$status_resp" ]]; then
       echo "Couldn't reach the API. Check your internet connection and try again."
       continue

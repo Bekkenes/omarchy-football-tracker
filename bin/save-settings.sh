@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Non-interactive settings save, called from the bar widget's popup GUI
-# (BarWidget.qml's Save button, via bar.run). Not meant to be run by hand
-# for routine use — bin/setup.sh is the interactive equivalent with live
-# team search.
+# (BarWidget.qml's Save button, which spawns this script with the key on its
+# stdin). Not meant to be run by hand for routine use — bin/setup.sh is the
+# interactive equivalent with live team search.
 #
-# Usage: save-settings.sh [--api-key <key>] [--teams <comma,separated,names>]
+# Usage: save-settings.sh [--api-key-stdin] [--teams <comma,separated,names>]
 #
-# --api-key, if given and non-empty, replaces the stored key.
+# --api-key-stdin, if given, reads the key as one line from stdin (an empty
+# line leaves the stored key untouched). The key is never accepted as an
+# argument: argv is readable by every local user through /proc/<pid>/cmdline,
+# which the mode-600 key file does not cover.
 # --teams, if given, REPLACES the favorite-teams list: each name is matched
 # against your current list first (case-insensitive, keeps the existing
 # team/id so nothing is re-resolved unnecessarily), then any unmatched name
@@ -22,14 +25,21 @@ source "$SCRIPT_DIR/lib.sh"
 new_api_key=""
 new_teams=""
 have_teams_arg=0
+key_from_stdin=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --api-key) new_api_key="${2:-}"; shift 2 ;;
+    --api-key-stdin) key_from_stdin=1; shift ;;
     --teams) new_teams="${2:-}"; have_teams_arg=1; shift 2 ;;
     *) shift ;;
   esac
 done
+
+if [[ "$key_from_stdin" -eq 1 ]]; then
+  # One line rather than everything up to EOF: the writer never has to close
+  # the pipe to finish the read.
+  IFS= read -r new_api_key || true
+fi
 
 if [[ -n "$new_api_key" ]]; then
   umask 077

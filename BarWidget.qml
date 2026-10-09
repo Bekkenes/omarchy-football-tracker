@@ -26,6 +26,29 @@ BarWidget {
 
   function close() { popupOpen = false }
 
+  // The API key travels on the child's stdin, never in its command line: argv
+  // is readable by every local user through /proc/<pid>/cmdline on default
+  // procfs mounts, and the mode-600 key file does not cover that copy. Same
+  // shape as the shell's own enterprise-wifi handler.
+  function saveSettings(apiKey, teams) {
+    saveProcess.keyText = apiKey
+    saveProcess.command = ["bash", root.pluginDir + "bin/save-settings.sh",
+      "--api-key-stdin", "--teams", teams]
+    saveProcess.running = true
+  }
+
+  Process {
+    id: saveProcess
+    // One line: the reader takes a single line, so nothing has to close the
+    // pipe for the write to complete.
+    property string keyText: ""
+    stdinEnabled: true
+    onStarted: {
+      write(keyText + "\n")
+      keyText = ""
+    }
+  }
+
   readonly property string label: Model.barLabel(state)
   readonly property var liveMatch: state.live_match || null
   readonly property var nextMatch: state.next_match || null
@@ -353,11 +376,7 @@ BarWidget {
             text: "Save"
             foreground: root.bar.foreground
             onClicked: {
-              if (root.bar) {
-                var cmd = "bash " + root.pluginDir + "bin/save-settings.sh --api-key "
-                  + Model.shQuote(apiKeyField.text) + " --teams " + Model.shQuote(teamsField.text)
-                root.bar.run(cmd)
-              }
+              root.saveSettings(apiKeyField.text, teamsField.text)
               apiKeyField.text = ""
               root.saveStatus = "Saved — check notifications for team matches."
             }

@@ -28,6 +28,18 @@ ft_api_key() {
   fi
 }
 
+# ft_curl_config <api-key>
+# Writes a curl config carrying the API key header to stdout; callers pipe it
+# into `curl -K -`. Passing the key as `-H "x-apisports-key: <key>"` would put
+# it in curl's command line, which every local user can read through
+# /proc/<pid>/cmdline on default procfs mounts — the mode-600 key file does not
+# cover that copy.
+ft_curl_config() {
+  local escaped="${1//\\/\\\\}"
+  escaped="${escaped//\"/\\\"}"
+  printf 'header = "x-apisports-key: %s"\n' "$escaped"
+}
+
 # ft_api <path-with-query>  e.g. ft_api "fixtures?live=all"
 ft_api() {
   local path="$1"
@@ -39,8 +51,8 @@ ft_api() {
   fi
   local attempt body code
   for attempt in 1 2 3; do
-    body="$(curl -sS --max-time 15 -w '\n%{http_code}' \
-      -H "x-apisports-key: $key" \
+    body="$(ft_curl_config "$key" | curl -sS --max-time 15 -w '\n%{http_code}' \
+      -K - \
       "$API_BASE/$path")"
     code="${body##*$'\n'}"
     body="${body%$'\n'*}"
