@@ -23,6 +23,10 @@ load_bookkeeping() {
   local bk="{}"
   if [[ -f "$STATE_FILE" ]]; then
     bk="$(jq -c '._bookkeeping // {}' "$STATE_FILE" 2>/dev/null)"
+    # An unreadable state file silently resets the dedup flags below, which is
+    # how a single corrupt state.json turns into a notification every poll.
+    [[ -z "$bk" && -s "$STATE_FILE" ]] &&
+      ft_log "load_bookkeeping: $STATE_FILE is not readable JSON — dedup state is lost for this poll"
   fi
   [[ -z "$bk" ]] && bk='{}'
   echo "$bk"

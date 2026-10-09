@@ -120,6 +120,16 @@ ft_write_config() {
 
 ft_write_state() {
   # ft_write_state <json>
+  # A failed upstream `jq` call leaves this empty (`jq: invalid JSON text passed
+  # to --argjson` then no output), and writing that over state.json also drops
+  # `_bookkeeping` — which is what stops the "play today" notification from
+  # re-firing on every later poll, arguably forever. Keep the last good file and
+  # say so instead; the caller's own state stays in memory regardless.
+  # `jq empty` is not enough on its own: it treats a blank string as valid.
+  if [[ -z "${1//[[:space:]]/}" ]] || ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$1"; then
+    ft_log "ft_write_state: refusing to write empty/invalid state, keeping the previous state.json"
+    return 1
+  fi
   local tmp="$STATE_FILE.tmp.$$"
   echo "$1" > "$tmp" && mv "$tmp" "$STATE_FILE"
 }
