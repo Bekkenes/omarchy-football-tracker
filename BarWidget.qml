@@ -19,6 +19,8 @@ BarWidget {
   property bool settingsOpen: false
   property string saveStatus: ""
   readonly property string pluginDir: Quickshell.env("HOME") + "/.config/omarchy/plugins/io.github.bekkenes.football-tracker/"
+  readonly property string stateDir: Quickshell.env("HOME") + "/.local/state/omarchy-football-tracker"
+  readonly property string configDir: Quickshell.env("HOME") + "/.config/omarchy-football-tracker"
   readonly property bool hasApiKey: config.has_api_key === true
   readonly property var configuredTeams: config.teams || []
 
@@ -30,13 +32,32 @@ BarWidget {
   readonly property var recentEvents: state.recent_events || []
   readonly property var upcoming: state.upcoming || []
 
-  visible: label !== ""
-  implicitWidth: label !== "" ? row.implicitWidth + Style.space(14) : 0
+  // The widget is also the setup entry point (its popup carries the Settings
+  // form), so it has to stay reachable before a fixture — or even an API key —
+  // exists: show the ball on its own rather than collapsing to zero width.
+  visible: true
+  implicitWidth: row.implicitWidth + Style.space(14)
   implicitHeight: barSize
+
+  // FileView cannot load a path whose directory does not exist yet, and
+  // `printErrors: false` hides that failure. On a fresh install these
+  // directories are created by bin/poll.sh / bin/setup.sh, which only run
+  // after the plugin has been loaded, so FileViews pointed at the paths below
+  // would never load them: the widget stayed empty (and unclickable) until the
+  // next shell reload, even after the poller had written state.json. Create
+  // the directories first, then bind the paths.
+  Process {
+    id: ensureDirs
+    running: true
+    command: ["mkdir", "-p", root.stateDir, root.configDir]
+    onExited: {
+      stateFile.path = root.stateDir + "/state.json"
+      configFile.path = root.configDir + "/config.json"
+    }
+  }
 
   FileView {
     id: stateFile
-    path: Quickshell.env("HOME") + "/.local/state/omarchy-football-tracker/state.json"
     watchChanges: true
     printErrors: false
     onLoaded: root.state = Model.safeParse(text())
@@ -45,7 +66,6 @@ BarWidget {
 
   FileView {
     id: configFile
-    path: Quickshell.env("HOME") + "/.config/omarchy-football-tracker/config.json"
     watchChanges: true
     printErrors: false
     onLoaded: root.config = Model.safeParse(text())
@@ -82,7 +102,7 @@ BarWidget {
     anchors.fill: parent
     cursorShape: Qt.PointingHandCursor
     onClicked: root.popupOpen = !root.popupOpen
-    onEntered: if (root.bar) root.bar.showTooltip(root, root.label)
+    onEntered: if (root.bar) root.bar.showTooltip(root, root.label !== "" ? root.label : "Football Tracker")
     onExited: if (root.bar) root.bar.hideTooltip(root)
     hoverEnabled: true
   }
