@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.bekkenes.football-tracker",
   "name": "Football Tracker",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "bekkenes",
   "description": "Tracks your favorite football teams: match-day and kickoff notifications, live goal/card/substitution alerts, and a bar widget with upcoming fixtures.",
   "kinds": ["bar-widget"],
