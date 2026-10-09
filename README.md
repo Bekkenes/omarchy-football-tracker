@@ -107,6 +107,28 @@ rm -f ~/.config/systemd/user/omarchy-football-tracker.{service,timer}
 rm -rf ~/.config/omarchy-football-tracker ~/.local/state/omarchy-football-tracker
 ```
 
+## Tests
+
+```
+test/run.sh
+```
+
+Requires `bash`, `jq` (or a compatible implementation) and `node` 18+ for the
+`Model.js` unit tests. Nothing in the suite touches the network, your real
+plugin config or the running shell: `poll.sh` runs in a throwaway `$HOME` with
+stub `curl` and `omarchy` commands, so an API call would show up as a failure
+instead of spending your API-Football quota.
+
+- `test/model.test.js` — the widget's pure formatting helpers, including the
+  `Tomorrow `/weekday prefix that keeps a fixture from looking like it is today.
+- `test/lib.test.sh` — `ft_write_state()` refusing empty or non-object state,
+  `ft_curl_config()` and `--api-key-stdin` keeping the key out of command
+  lines, the config round trip, and the event icon mapping.
+- `test/poll.test.sh` — a full poll against a generated fixture cache: no API
+  traffic while the cache is fresh, `_bookkeeping` surviving a failed state
+  write, and the "play today" notification firing once rather than on every
+  poll.
+
 ## License
 
 [MIT](LICENSE). Bundled icons are derived from Lucide (ISC) — see
