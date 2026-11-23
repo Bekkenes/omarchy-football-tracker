@@ -107,7 +107,13 @@ if [[ "$cache_stale" -eq 1 ]]; then
     d="$(date -u -d "+${offset} day" +%Y-%m-%d)"
     resp="$(ft_api "fixtures?date=${d}")" || { ft_log "fixture fetch failed for $d"; fail_count=$((fail_count + 1)); continue; }
     api_err="$(jq -c '.errors // {}' <<<"$resp" 2>/dev/null)"
-    [[ -n "$api_err" && "$api_err" != "{}" && "$api_err" != "[]" ]] && ft_log "API error for $d: $api_err"
+    if [[ -z "$api_err" ]] || [[ "$api_err" != "{}" && "$api_err" != "[]" ]]; then
+      # Invalid JSON or an API error (quota used up, bad key) — the response
+      # carries no fixtures, so do not count this day as fetched.
+      ft_log "API error for $d: ${api_err:-invalid response}"
+      fail_count=$((fail_count + 1))
+      continue
+    fi
     fx="$(jq -c --argjson ids "$team_ids" --argjson teams "$teams_json" '
       [.response[]? as $f
        | ($f.teams.home.id) as $hid | ($f.teams.away.id) as $aid

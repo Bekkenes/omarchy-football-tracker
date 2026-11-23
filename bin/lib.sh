@@ -61,6 +61,13 @@ ft_api() {
       sleep $((attempt * 8))
       continue
     fi
+    if [[ "$code" != "200" ]]; then
+      # curl gives 000 on network errors (DNS, timeout, offline). Treat that and
+      # any non-200 as a failure so callers do not cache an empty fixture list.
+      ft_log "HTTP $code for $path (attempt $attempt)"
+      [[ "$code" == "000" && "$attempt" -lt 3 ]] && { sleep $((attempt * 5)); continue; }
+      return 1
+    fi
     printf '%s' "$body"
     return 0
   done
