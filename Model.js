@@ -1,6 +1,13 @@
 // Pure formatting helpers for the football-tracker bar widget/popup.
 // No API calls, no state — just turns state.json fields into display strings.
 
+// Wrap a value for safe use as a single POSIX shell argument. Used for the
+// live-poll settings, which go through bar.run() as a shell string. (The API
+// key never does: it goes to save-settings.sh on stdin.)
+function shQuote(value) {
+  return "'" + String(value).split("'").join("'\\''") + "'"
+}
+
 function safeParse(text) {
   try {
     var parsed = JSON.parse(text)
@@ -60,6 +67,14 @@ function barLabel(state) {
     return state.next_match.team + " " + dayLabel(state.next_match.kickoff) + kickoffClock(state.next_match.kickoff)
   }
   return ""
+}
+
+// FotMob has no public API mapping an API-Football fixture id to one of
+// its own match pages, so this links to a Google search for the match
+// instead of a direct FotMob URL — one extra click, but it never breaks.
+function fotmobSearchLink(team, opponent) {
+  if (!team || !opponent) return ""
+  return "https://www.google.com/search?q=" + encodeURIComponent(team + " vs " + opponent + " fotmob")
 }
 
 function eventHeadline(ev) {

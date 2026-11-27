@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Effects
 import Quickshell
 import Quickshell.Io
 import qs.Ui
@@ -100,14 +101,32 @@ BarWidget {
     anchors.centerIn: parent
     spacing: Style.space(6)
 
-    Image {
-      id: glyph
+    Item {
+      id: glyphFrame
       anchors.verticalCenter: parent.verticalCenter
-      source: root.liveMatch ? Qt.resolvedUrl("icons/goal.svg") : Qt.resolvedUrl("icons/ball.svg")
       width: Style.font.body
       height: Style.font.body
-      sourceSize.width: width
-      sourceSize.height: height
+
+      Image {
+        id: glyph
+        anchors.fill: parent
+        source: root.liveMatch ? Qt.resolvedUrl("icons/goal.svg") : Qt.resolvedUrl("icons/ball.svg")
+        sourceSize.width: width
+        sourceSize.height: height
+        // ball.svg ships a fixed near-white stroke (#e5e7eb) that doesn't
+        // adapt to the bar's theme — tint it to match the label text. goal.svg
+        // keeps its own deliberate green (it's a status color, not neutral).
+        visible: !!root.liveMatch
+        layer.enabled: !root.liveMatch
+      }
+
+      MultiEffect {
+        anchors.fill: glyph
+        source: glyph
+        visible: !root.liveMatch
+        colorization: 1.0
+        colorizationColor: root.bar ? root.bar.barForeground : Color.bar.text
+      }
     }
 
     Text {
@@ -115,7 +134,7 @@ BarWidget {
       anchors.verticalCenter: parent.verticalCenter
       text: root.label
       visible: !root.vertical
-      color: root.bar ? root.bar.barForeground : "white"
+      color: root.bar ? root.bar.barForeground : Color.bar.text
       font.family: root.bar ? root.bar.fontFamily : "monospace"
       font.pixelSize: Style.font.body
     }
@@ -145,27 +164,43 @@ BarWidget {
       spacing: Style.space(10)
 
       // --- live match ---
-      Column {
+      Item {
+        id: liveMatchRow
         visible: root.liveMatch !== null
         width: parent.width
-        spacing: Style.space(4)
+        height: liveMatchColumn.implicitHeight
 
-        Text {
-          textFormat: Text.PlainText
-          text: root.liveMatch ? (root.liveMatch.team + " " + root.liveMatch.team_score + " - " + root.liveMatch.opponent_score + " " + root.liveMatch.opponent) : ""
-          color: root.bar.foreground
-          font.family: root.bar.fontFamily
-          font.pixelSize: Style.font.subtitle
-          font.bold: true
+        Column {
+          id: liveMatchColumn
           width: parent.width
-          elide: Text.ElideRight
+          spacing: Style.space(4)
+
+          Text {
+            textFormat: Text.PlainText
+            text: root.liveMatch ? (root.liveMatch.team + " " + root.liveMatch.team_score + " - " + root.liveMatch.opponent_score + " " + root.liveMatch.opponent) : ""
+            color: root.bar.foreground
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.subtitle
+            font.bold: true
+            width: parent.width
+            elide: Text.ElideRight
+          }
+          Text {
+            textFormat: Text.PlainText
+            text: root.liveMatch ? (root.liveMatch.competition + " · " + (root.liveMatch.elapsed || 0) + "'") : ""
+            color: Qt.darker(root.bar.foreground, 1.4)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+          }
         }
-        Text {
-          textFormat: Text.PlainText
-          text: root.liveMatch ? (root.liveMatch.competition + " · " + (root.liveMatch.elapsed || 0) + "'") : ""
-          color: Qt.darker(root.bar.foreground, 1.4)
-          font.family: root.bar.fontFamily
-          font.pixelSize: Style.font.caption
+
+        MouseArea {
+          anchors.fill: parent
+          cursorShape: Qt.PointingHandCursor
+          enabled: root.liveMatch !== null
+          onClicked: {
+            if (root.liveMatch) Qt.openUrlExternally(Model.fotmobSearchLink(root.liveMatch.team, root.liveMatch.opponent))
+          }
         }
       }
 
@@ -270,29 +305,42 @@ BarWidget {
         Repeater {
           model: root.upcoming.slice(0, 5)
 
-          Column {
+          Item {
+            id: upcomingRow
             required property var modelData
             width: parent.width
-            spacing: 0
+            height: upcomingColumn.implicitHeight
 
-            Text {
-              textFormat: Text.PlainText
-              text: modelData.team + " vs " + modelData.opponent
-              color: root.bar.foreground
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.bodySmall
-              font.bold: true
+            Column {
+              id: upcomingColumn
               width: parent.width
-              elide: Text.ElideRight
+              spacing: 0
+
+              Text {
+                textFormat: Text.PlainText
+                text: upcomingRow.modelData.team + " vs " + upcomingRow.modelData.opponent
+                color: root.bar.foreground
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                font.bold: true
+                width: parent.width
+                elide: Text.ElideRight
+              }
+              Text {
+                textFormat: Text.PlainText
+                text: Model.dayLabel(upcomingRow.modelData.kickoff) + Model.kickoffClock(upcomingRow.modelData.kickoff) + " · " + upcomingRow.modelData.competition
+                color: Qt.darker(root.bar.foreground, 1.4)
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                width: parent.width
+                wrapMode: Text.WordWrap
+              }
             }
-            Text {
-              textFormat: Text.PlainText
-              text: Model.dayLabel(modelData.kickoff) + Model.kickoffClock(modelData.kickoff) + " · " + modelData.competition
-              color: Qt.darker(root.bar.foreground, 1.4)
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.caption
-              width: parent.width
-              wrapMode: Text.WordWrap
+
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: Qt.openUrlExternally(Model.fotmobSearchLink(upcomingRow.modelData.team, upcomingRow.modelData.opponent))
             }
           }
         }
@@ -367,6 +415,59 @@ BarWidget {
           id: teamsField
           width: parent.width
           placeholderText: "e.g. Liverpool, Rosenborg"
+        }
+
+        Text {
+          textFormat: Text.PlainText
+          text: "Live score polling"
+          color: Qt.darker(root.bar.foreground, 1.3)
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
+
+        Text {
+          textFormat: Text.PlainText
+          text: "Auto spreads today's live-match minutes across a ~100/day API"
+            + " budget automatically. Manual always uses the interval you pick,"
+            + " even if that risks running out of requests."
+          color: Qt.darker(root.bar.foreground, 1.4)
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          width: parent.width
+          wrapMode: Text.WordWrap
+        }
+
+        Dropdown {
+          id: livePollModeDropdown
+          width: parent.width
+          value: root.config.live_poll_mode || "auto"
+          options: [
+            { value: "auto", label: "Auto (recommended)" },
+            { value: "manual", label: "Manual interval" }
+          ]
+          foreground: root.bar.foreground
+          onChanged: function(v) {
+            if (root.bar) root.bar.run("bash " + root.pluginDir + "bin/save-settings.sh --live-poll-mode " + Model.shQuote(v))
+          }
+        }
+
+        Dropdown {
+          id: livePollIntervalDropdown
+          width: parent.width
+          visible: livePollModeDropdown.value === "manual"
+          value: String(root.config.poll_interval_live_seconds || 180)
+          options: [
+            { value: "60", label: "Every 1 min" },
+            { value: "120", label: "Every 2 min" },
+            { value: "180", label: "Every 3 min" },
+            { value: "300", label: "Every 5 min" },
+            { value: "600", label: "Every 10 min" }
+          ]
+          foreground: root.bar.foreground
+          onChanged: function(v) {
+            if (root.bar) root.bar.run("bash " + root.pluginDir + "bin/save-settings.sh --live-poll-interval " + Model.shQuote(v))
+          }
         }
 
         Row {

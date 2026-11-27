@@ -66,7 +66,8 @@ fi
 config="$(ft_read_config)"
 teams_json="$(jq -c '.teams // []' <<<"$config")"
 team_count="$(jq 'length' <<<"$teams_json")"
-live_interval="$(jq -r '.poll_interval_live_seconds // 180' <<<"$config")"
+live_poll_mode="$(jq -r '.live_poll_mode // "auto"' <<<"$config")"
+manual_live_interval="$(jq -r '.poll_interval_live_seconds // 180' <<<"$config")"
 
 if [[ "$team_count" -eq 0 ]]; then
   ft_log "no favorite teams configured — run setup.sh"
@@ -145,15 +146,55 @@ bookkeeping="$(load_bookkeeping)"
 # fresh, so cards from a finished/previous match don't linger in the popup
 # forever once nothing is live.
 prev_live_fixture_id="$([[ -f "$STATE_FILE" ]] && jq -r '.live_match.fixture_id // empty' "$STATE_FILE" 2>/dev/null)"
+prev_live_match="$([[ -f "$STATE_FILE" ]] && jq -c '.live_match // null' "$STATE_FILE" 2>/dev/null || echo 'null')"
+[[ -z "$prev_live_match" ]] && prev_live_match='null'
 prev_recent_events="$([[ -f "$STATE_FILE" ]] && jq -c '.recent_events // []' "$STATE_FILE" 2>/dev/null || echo '[]')"
 [[ -z "$prev_recent_events" ]] && prev_recent_events='[]'
 recent_events='[]'
 
 live_match="null"
-next_match="$(jq -c 'sort_by(.kickoff) | .[0] // null' <<<"$fixtures")"
+
+# future_fixtures: fixtures that HAVEN'T kicked off yet, feeding both
+# next_match (earliest of these) and the popup's upcoming list. jq's
+# fromdateiso8601 rejects our "+00:00"-suffixed timestamps (only accepts a
+# literal "Z"), so do the epoch comparison in bash like the rest of this
+# file already does. Without this filter, a fixture whose kickoff has
+# already passed (and isn't resolvable as live — e.g. quota exhausted)
+# just sits there forever looking "upcoming" until the cache refreshes.
+future_fixtures="[]"
+while IFS= read -r fx; do
+  [[ -z "$fx" || "$fx" == "null" ]] && continue
+  k="$(jq -r '.kickoff' <<<"$fx")"
+  k_epoch="$(date -u -d "$k" +%s 2>/dev/null || echo 0)"
+  [[ "$k_epoch" -eq 0 || "$k_epoch" -le "$NOW_EPOCH" ]] && continue
+  future_fixtures="$(jq -c --argjson a "$future_fixtures" --argjson f "$fx" '$a + [$f]' <<<null)"
+done < <(jq -c '.[]' <<<"$fixtures")
+future_fixtures="$(jq -c 'sort_by(.kickoff)' <<<"$future_fixtures")"
+next_match="$(jq -c '.[0] // null' <<<"$future_fixtures")"
 
 # fixtures happening today (local date match, UTC-based approximation)
 todays="$(jq -c --arg today "$TODAY" '[.[] | select(.kickoff[0:10] == $today)]' <<<"$fixtures")"
+
+# Adaptive live-poll interval: spread today's total live-window minutes
+# (each fixture gets a fixed 130-minute window, same as the live-check
+# gate below) across a fixed daily API-call budget, so N matches today —
+# whether concurrent or at different kickoff times — stay within quota
+# instead of each independently polling every single poll.sh tick. "manual"
+# mode skips this and always uses poll_interval_live_seconds verbatim.
+if [[ "$live_poll_mode" == "manual" ]]; then
+  live_interval="$manual_live_interval"
+else
+  today_fixture_count="$(jq 'length' <<<"$todays")"
+  total_live_minutes=$(( today_fixture_count * 130 ))
+  live_budget_calls=$(( API_DAILY_BUDGET - FIXTURE_CACHE_CALLS_PER_DAY ))
+  target_checks=$(( live_budget_calls / 2 ))  # 2 API calls per live check
+  if [[ "$total_live_minutes" -gt 0 && "$target_checks" -gt 0 ]]; then
+    live_interval=$(( (total_live_minutes * 60 + target_checks - 1) / target_checks ))  # ceil
+    [[ "$live_interval" -lt 60 ]] && live_interval=60
+  else
+    live_interval="$manual_live_interval"
+  fi
+fi
 
 while IFS= read -r fx; do
   [[ -z "$fx" || "$fx" == "null" ]] && continue
@@ -184,8 +225,44 @@ while IFS= read -r fx; do
 
   # live window: kickoff time through kickoff + 130 minutes
   if [[ "$NOW_EPOCH" -ge "$kickoff_epoch" && "$NOW_EPOCH" -le $((kickoff_epoch + 130*60)) ]]; then
+    # Throttle to poll_interval_live_seconds: the systemd timer still fires
+    # every 60s regardless, but a live match costs 2 API calls per check
+    # (fixtures?live=all + fixtures/events), which blows through a free-plan
+    # daily quota well before full time if we hit the API on every tick.
+    # While waiting out the interval (or once quota's gone, see below), keep
+    # showing the last known live score instead of silently reverting to the
+    # static next_match/kickoff label, which reads as "hasn't started yet".
+    last_live_check="$(jq -r --arg k "$key" '.[$k].live_check // 0' <<<"$bookkeeping")"
+    due_for_check=1
+    [[ "$last_live_check" =~ ^[0-9]+$ ]] && (( NOW_EPOCH - last_live_check < live_interval )) && due_for_check=0
+
+    if [[ "$due_for_check" -eq 0 ]]; then
+      if [[ "$prev_live_fixture_id" == "$fid" ]]; then
+        live_match="$prev_live_match"
+        recent_events="$prev_recent_events"
+      fi
+      continue_live_check=0
+    else
+      continue_live_check=1
+    fi
+
+    if [[ "$continue_live_check" -eq 1 ]]; then
+    if [[ "$live_poll_mode" != "manual" ]]; then
+      ft_log "adaptive live interval: ${live_interval}s (${today_fixture_count} fixture(s) today, ${total_live_minutes} total live-window minutes)"
+    fi
     live_resp="$(ft_api "fixtures?live=all")" || live_resp=""
+    live_api_err="$(jq -c '.errors // {}' <<<"$live_resp" 2>/dev/null)"
+    if [[ -n "$live_api_err" && "$live_api_err" != "{}" && "$live_api_err" != "[]" ]]; then
+      ft_log "live fixtures API error for $team vs $opp: $live_api_err"
+    fi
+    bookkeeping="$(jq -c --arg k "$key" --argjson t "$NOW_EPOCH" '.[$k].live_check = $t' <<<"$bookkeeping")"
     live_fx="$(jq -c --argjson fid "$fid" '.response[]? | select(.fixture.id == $fid)' <<<"$live_resp" 2>/dev/null)"
+
+    if [[ -z "$live_fx" || "$live_fx" == "null" ]] && [[ -n "$live_api_err" && "$live_api_err" != "{}" && "$live_api_err" != "[]" ]] && [[ "$prev_live_fixture_id" == "$fid" ]]; then
+      ft_log "keeping last known live score for $team vs $opp (API error, see above)"
+      live_match="$prev_live_match"
+      recent_events="$prev_recent_events"
+    fi
 
     if [[ -n "$live_fx" && "$live_fx" != "null" ]]; then
       if [[ "$notified_ko" != "true" ]]; then
@@ -258,12 +335,13 @@ while IFS= read -r fx; do
         ft_notify "Full time: $team $team_score-$opponent_score $opp" "$comp" "whistle.svg" "normal"
       fi
     fi
+    fi
   fi
 done < <(jq -c '.[]' <<<"$todays")
 
 state="$(jq -n \
   --argjson next "$next_match" --argjson live "$live_match" \
-  --argjson recent "$recent_events" --argjson upcoming "$fixtures" \
+  --argjson recent "$recent_events" --argjson upcoming "$future_fixtures" \
   --argjson bk "$bookkeeping" \
   '{updated_at: (now | todateiso8601), next_match: $next, live_match: $live, recent_events: $recent, upcoming: $upcoming, _bookkeeping: $bk}')"
 ft_write_state "$state"
